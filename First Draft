@@ -1,0 +1,402 @@
+%% QMF Group Work 2025 - Part 2: Empirical Analysis
+%
+% This script performs the empirical analysis required for Part 2 of the
+% assignment. It follows the steps (a) through (f) as outlined in the
+% problem description.
+%
+% Ensure the following data files are in the same directory:
+%   - FF42.txt
+%   - RF.txt
+%   - FF6.txt
+%
+% Ensure the provided function 'grs.m' is in the same directory.
+%
+
+clear;
+clc;
+close all;
+
+% --- Define Data Path ---
+data_folder_path = 'Quant Coursework';
+% Add this folder to the MATLAB path so it can find grs.m
+try
+    addpath(data_folder_path);
+    disp(['Added ''' data_folder_path ''' to MATLAB path.']);
+catch ME_path
+    warning(['Could not add folder ''' data_folder_path ''' to path. Ensure it exists.']);
+    disp(ME_path.message);
+end
+% ------------------------
+
+%% Part 2a: Data Loading, Excess Returns, and Stationarity
+
+disp('--- Part 2a: Data Loading and Stationarity ---');
+
+% Load the raw data
+% We use readmatrix() instead of load() to automatically skip text headers
+% and handle files that may have a non-data column (like a date).
+try
+    disp('Loading data using readmatrix with specific header settings...');
+    
+    % We use fullfile() to safely join the folder path and file name.
+    
+    % --- Load FF42.txt (NO HEADER) ---
+    % User confirmed no header, so we read from line 1.
+    % 'NumHeaderLines', 0 is the default, but we set it for clarity.
+    temp_FF42 = readmatrix(fullfile(data_folder_path, 'FF42.txt'), 'NumHeaderLines', 0);
+    
+    % --- Load RF.txt (HAS HEADER) ---
+    % From snippet, 'RF' is on line 1. We skip 1 line.
+    temp_RF = readmatrix(fullfile(data_folder_path, 'RF.txt'), 'NumHeaderLines', 1);
+    
+    % --- Load FF6.txt (HAS HEADER) ---
+    % From snippet, 'Mkt-RF...' is on line 1. We skip 1 line.
+    temp_FF6 = readmatrix(fullfile(data_folder_path, 'FF6.txt'), 'NumHeaderLines', 1);
+    
+    
+    % *** IMPORTANT ASSUMPTION ***
+    % We assume the files have a date column (like '196307') as the FIRST
+    % column, and the data follows. We will select all columns *except*
+    % the first one.
+    
+    % Select only the data columns:
+    % FF42: Select columns 2 through 43 (42 portfolios)
+    % RF:   Select column 2 (1 risk-free rate)
+    % FF6:  Select columns 2 through 7 (6 factors)
+    
+    FF42_returns = temp_FF42(:, 2:end);
+    RF_rate = temp_RF(:, 2:end);
+    FF6_factors = temp_FF6(:, 2:end);
+
+    disp('Data successfully loaded and parsed.');
+
+catch ME
+    disp('ERROR: Could not load data files.');
+    disp('Please ensure FF42.txt, RF.txt, and FF6.txt are in the specified folder:');
+    disp(data_folder_path);
+    disp('If your files do NOT have a date column, remove the "(:, 2:end)" from the load commands.');
+    rethrow(ME);
+end
+
+% --- Define dimensions DYNAMICALLY from loaded data ---
+[T_ff42, N] = size(FF42_returns);
+[T_rf, N_rf] = size(RF_rate);
+[T_ff6, K] = size(FF6_factors);
+
+% Check for consistent time series length (rows)
+if T_ff42 ~= T_rf || T_ff42 ~= T_ff6
+    error('Data files have a mismatched number of rows (T). Please check files.\nFF42 has %d rows, RF has %d rows, FF6 has %d rows.', T_ff42, T_rf, T_ff6);
+end
+
+% All T's are the same, assign T
+T = T_ff42; 
+
+disp(['Data dimensions loaded: T=' num2str(T) ', N=' num2str(N) ', K=' num2str(K)]);
+
+% Check if loaded dimensions match assignment description (as a warning)
+if T ~= 745
+    warning('Loaded time series length (T=%d) does not match expected T=745 from PDF.', T);
+end
+if N ~= 42
+    warning('Loaded portfolios (N=%d) does not match expected N=42 from PDF.', N);
+end
+if K ~= 6
+    warning('Loaded factors (K=%d) does not match expected K=6 from PDF.', K);
+end
+if N_rf ~= 1
+     warning('Loaded Risk Free file (RF.txt) has %d data columns. Expected 1.', N_rf);
+end
+% --------------------------------------------------------
+
+
+% Construct the matrix of excess returns (Re)
+% We need to subtract the risk-free rate from each of the 42 portfolios.
+% RF_rate is Tx1, FF42_returns is TxN.
+Re = FF42_returns - repmat(RF_rate, 1, N);
+f = FF6_factors;
+
+disp(['Matrix Re (Excess Returns) constructed: ' num2str(size(Re, 1)) 'x' num2str(size(Re, 2))]);
+disp(['Matrix f (Factors) constructed: ' num2str(size(f, 1)) 'x' num2str(size(f, 2))]);
+
+% Test for non-stationarity using Augmented Dickey-Fuller (ADF) test
+% Null Hypothesis (H0) of adftest is that the series has a unit root (is non-stationary).
+% h=1 means we REJECT H0 (i.e., series is stationary).
+% h=0 means we FAIL TO REJECT H0 (i.e., series is non-stationary).
+
+h_Re = zeros(N, 1);
+h_f = zeros(K, 1);
+
+% Test all 42 portfolios
+for i = 1:N
+    h_Re(i) = adftest(Re(:, i));
+end
+
+% Test all 6 factors
+for i = 1:K
+    h_f(i) = adftest(f(:, i));
+end
+
+num_stationary_Re = sum(h_Re);
+num_stationary_f = sum(h_f);
+
+disp('Stationarity Test (ADF):');
+disp(['  - Portfolios (Re): ' num2str(num_stationary_Re) ' out of ' num2str(N) ' reject the null of non-stationarity.']);
+disp(['  - Factors (f): ' num2str(num_stationary_f) ' out of ' num2str(K) ' reject the null of non-stationarity.']);
+disp(' ');
+
+%% Part 2b: Time Series Regression (OLS)
+
+disp('--- Part 2b: Time Series Regression ---');
+
+% Model: R_t^e = alpha + beta * f_t + epsilon_t
+% We run N=42 separate regressions.
+
+% Construct the regressor matrix X (Tx(K+1)) with an intercept
+X = [ones(T, 1), f];
+
+% Perform the OLS regressions for all N portfolios simultaneously
+% B_ols = (X'X)^-1 * (X'Re)
+% B_ols will be (K+1)xN. Each column corresponds to a portfolio.
+% Row 1: Alphas (intercepts)
+% Rows 2-(K+1): Betas (factor loadings)
+B_ols = X \ Re;
+
+% Extract alphas (1xN) and betas (KxN)
+alphas = B_ols(1, :);       % 1xN vector
+betas = B_ols(2:end, :);  % KxN matrix
+
+% Transpose to match assignment notation (if needed)
+% [a, B] matrix of N rows and K+1 columns
+alpha_vec = alphas';      % Nx1 vector of alphas
+beta_matrix = betas';     % NxK matrix of betas
+
+disp(['Alpha vector estimated: ' num2str(size(alpha_vec, 1)) 'x' num2str(size(alpha_vec, 2))]);
+disp(['Beta matrix estimated: ' num2str(size(beta_matrix, 1)) 'x' num2str(size(beta_matrix, 2))]);
+
+% Calculate time-series R-squared for each portfolio
+residuals = Re - X * B_ols;
+TSS = sum((Re - mean(Re)).^2); % Total Sum of Squares (1xN)
+RSS = sum(residuals.^2);       % Residual Sum of Squares (1xN)
+
+R_squared = 1 - (RSS ./ TSS); % 1xN vector of R-squared values
+avg_R_squared = mean(R_squared);
+
+% Report the R-squared values
+disp('Time-Series R-squared:');
+for i = 1:N
+    fprintf('  - Portfolio %2d: R^2 = %.4f\n', i, R_squared(i));
+end
+fprintf('  - AVERAGE Time-Series R^2 = %.4f\n', avg_R_squared);
+disp(' ');
+
+%% Part 2c: Cross-Sectional Regression (Risk Premia)
+
+disp('--- Part 2c: Cross-Sectional Regression ---');
+
+% Model: \bar{R}^e = \gamma_0 * 1_N + \beta * \gamma_1 + e
+% This is a single regression across N=42 portfolios.
+
+% 1. Get time-series sample means of excess returns (Nx1)
+mean_Re = mean(Re)';
+
+% 2. Construct the cross-sectional regressor matrix (Nx(K+1))
+% We use the betas estimated in Part 2b
+X_cs = [ones(N, 1), beta_matrix];
+
+% 3. Estimate gamma = [gamma_0; gamma_1]
+% gamma_hat = (X_cs' * X_cs)^-1 * (X_cs' * mean_Re)
+gamma_hat = (X_cs' * X_cs) \ (X_cs' * mean_Re); % (K+1)x1 vector
+
+gamma_0_hat = gamma_hat(1);
+gamma_1_hat = gamma_hat(2:end); % Kx1 vector
+
+% 4. Compute asymptotic covariance matrix (Shanken-corrected)
+% VS = (1 + \gamma_1' * V_f^-1 * \gamma_1) * A * \Sigma * A' + [0 0; 0 V_f]
+
+% Get sample covariance matrices
+V_f_hat = cov(f);           % KxK
+Sigma_hat = cov(residuals); % NxN (Cov of time-series residuals)
+
+% Get A_hat = (X_cs' * X_cs)^-1 * X_cs'
+A_hat = (X_cs' * X_cs) \ X_cs'; % (K+1)xN
+
+% Calculate the scalar Shanken correction term (c)
+% Note: Using '\' for inv(V_f_hat) * gamma_1_hat is more stable
+shanken_scalar = (1 + gamma_1_hat' * (V_f_hat \ gamma_1_hat));
+
+% Calculate the two parts of the covariance matrix VS
+% NOTE: The PDF formula `\hat{A}\hat{A}\hat{A}^{\prime}` appears to be a typo.
+% The standard Shanken (1992) formula is `\hat{A} \hat{\Sigma} \hat{A}'`.
+% We proceed using the standard formula.
+term1_matrix = shanken_scalar * (A_hat * Sigma_hat * A_hat');
+
+term2_matrix = zeros(K+1, K+1);
+term2_matrix(2:end, 2:end) = V_f_hat;
+
+% Asymptotic Covariance Matrix of gamma
+VS = term1_matrix + term2_matrix;
+
+% 5. Compute t-statistics
+% se = sqrt(diag(VS) / T)
+se_gamma = sqrt(diag(VS) / T);
+t_stats = gamma_hat ./ se_gamma;
+
+% Report estimates and t-statistics
+factor_names = {'Intercept (gamma_0)', 'Market', 'Size', 'Value', 'Profitability', 'Investment', 'Momentum'};
+disp('Cross-Sectional Regression Estimates (Gammas):');
+disp('---------------------------------------------------------');
+disp('Factor             | Estimate (gamma) | t-statistic');
+disp('---------------------------------------------------------');
+for i = 1:K+1
+    fprintf('%-18s | %16.4f | %11.4f\n', factor_names{i}, gamma_hat(i), t_stats(i));
+end
+disp('---------------------------------------------------------');
+
+% Compare factor risk premia (gamma_1) with factor time-series means
+mean_f = mean(f)'; % Kx1 vector of factor means
+disp(' ');
+disp('Comparison of Factor Risk Premia (gamma_1) vs. Factor Means:');
+disp('---------------------------------------------------------');
+disp('Factor             | Premia (gamma_1) |   TS Mean (f)');
+disp('---------------------------------------------------------');
+for i = 1:K
+    fprintf('%-18s | %16.4f | %11.4f\n', factor_names{i+1}, gamma_1_hat(i), mean_f(i));
+end
+disp('---------------------------------------------------------');
+disp(' ');
+
+%% Part 2d: Cross-Sectional R-squared
+
+disp('--- Part 2d: Cross-Sectional R-squared ---');
+
+% 1. Compute sample pricing errors (e_hat)
+e_hat = mean_Re - X_cs * gamma_hat;
+
+% 2. Compute errors from a mean-only model (e_0_hat)
+mean_Re_overall = mean(mean_Re);
+e_0_hat = mean_Re - ones(N, 1) * mean_Re_overall;
+
+% 3. Calculate cross-sectional R-squared
+RSS_cs = e_hat' * e_hat;
+TSS_cs = e_0_hat' * e_0_hat;
+
+R_cs_squared = 1 - (RSS_cs / TSS_cs);
+
+fprintf('Cross-Sectional R-squared (R_cs^2): %.4f\n', R_cs_squared);
+disp(' ');
+
+%% Part 2e: GRS Test
+
+disp('--- Part 2e: GRS Test ---');
+
+% This section uses the 'grs.m' function provided.
+% The function signature is [stat,pval] = grs(r1,r2)
+%   r1 = K benchmark portfolios (our factors, f)
+%   r2 = N test portfolios (our excess returns, Re)
+%
+% This test checks if the K factors (r1) span the N test assets (r2).
+% This is equivalent to testing if the alphas from the time-series
+% regressions are jointly zero.
+
+% Initialize p_value to NaN in case the 'try' block fails
+p_value = NaN;
+
+try
+    % Call the GRS function as per its definition: [stat,pval] = grs(r1,r2)
+    [GRS_stat, p_value] = grs(f, Re);
+    
+    fprintf('GRS Test Statistic: %.4f\n', GRS_stat);
+    fprintf('GRS p-value: %.4f\n', p_value);
+    
+    if p_value < 0.05
+        disp('Conclusion: At 5% significance level, we REJECT the null hypothesis.');
+        disp('The six-factor model is rejected by the data (i.e., the factors do not span the test assets).');
+    else
+        disp('Conclusion: At 5% significance level, we FAIL TO REJECT the null hypothesis.');
+        disp('The six-factor model is not rejected by the data (i.e., the factors span the test assets).');
+    end
+    
+catch ME
+    disp('ERROR: Could not run grs.m function.');
+    disp(['Please ensure ''grs.m'' is in your MATLAB path or in the folder: ' data_folder_path]);
+    disp(ME.message);
+end
+
+disp(' ');
+
+%% Part 2f: Overall Assessment
+
+disp('--- Part 2f: Overall Assessment ---');
+disp(' ');
+disp('Based on the analysis:');
+disp(['- Time-Series Avg R^2 (Part 2b): ' num2str(avg_R_squared, '%.4f')]);
+disp(['- Cross-Sectional R^2 (Part 2d): ' num2str(R_cs_squared, '%.4f')]);
+disp(['- GRS Test p-value (Part 2e): ' num2str(p_value, '%.4f')]);
+disp(' ');
+disp('Combine these findings with your reading from Part 1 to form');
+disp('your conclusion about the Fama-French six-factor model.');
+disp(' ');
+disp('End of analysis.');
+
+
+
+%%%%%%%%%%%%%% Temp %%%%%%%%%%%%%%%%%%%%%
+%% Part 2g: Visualizations (User Requested)
+% This section generates the additional plots requested.
+
+disp('--- Generating Visualizations ---');
+
+% Define factor names for plotting
+plot_factor_names = {'Market', 'Size', 'Value', 'Profitability', 'Investment', 'Momentum'};
+
+%% 1. Factor Return Distributions (Part 2a)
+figure;
+sgtitle('Factor Return Distributions (Part 2a)');
+for i = 1:K
+    subplot(3, 2, i);
+    histogram(f(:, i), 50); % Use 50 bins for more detail
+    title(['Distribution of ' plot_factor_names{i}]);
+    xlabel('Return');
+    ylabel('Frequency');
+    grid on;
+end
+
+%% 2. Time-Series Residual Autocorrelation (Part 2b)
+figure;
+sgtitle('Time-Series Residual Autocorrelation (Part 2b)');
+for i = 1:4
+    subplot(2, 2, i);
+    autocorr(residuals(:, i));
+    title(['Residual Autocorrelation - Portfolio ' num2str(i)]);
+end
+disp('Note: For Autocorrelation, significant lags (blue lines breached)');
+disp('suggests the model may have autocorrelation issues.');
+
+%% 3. Cross-Sectional Regression Fit (Part 2d)
+% Calculate the predicted mean excess returns from the CS regression
+predicted_Re = X_cs * gamma_hat;
+
+figure;
+scatter(predicted_Re, mean_Re, 'filled');
+hold on;
+% Add a 45-degree line for reference (perfect fit)
+refline(1, 0); 
+hold off;
+title('Cross-Sectional Regression Fit (Part 2d)');
+xlabel('Predicted Mean Excess Return');
+ylabel('Actual Mean Excess Return');
+legend('Portfolios', '45-degree (Perfect Fit)', 'Location', 'best');
+grid on;
+
+%% 4. Distribution of Time-Series Alphas (Part 2e)
+figure;
+histogram(alpha_vec, 20); % Use 20 bins
+hold on;
+% Add a vertical line at zero
+xline(0, 'r--', 'LineWidth', 2, 'Label', 'Zero Alpha');
+hold off;
+title('Distribution of Time-Series Alphas (Part 2e)');
+xlabel('Alpha (\alpha)');
+ylabel('Frequency');
+grid on;
+disp('Visualization complete.');
