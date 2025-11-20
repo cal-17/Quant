@@ -1,0 +1,456 @@
+%% QMF Group Work 2025 - Part 2: Empirical Analysis
+
+clear;
+clc;
+close all;
+
+% --- Define Data Path ---
+data_folder_path = 'Quant Coursework';
+try
+    addpath(data_folder_path);
+    disp(['Added ''' data_folder_path ''' to MATLAB path.']);
+catch ME_path
+    warning(['Could not add folder ''' data_folder_path ''' to path. Ensure it exists.']);
+    disp(ME_path.message);
+end
+% ------------------------
+
+%% Part 2a: Data Loading, Excess Returns, and Stationarity
+
+disp('--- Part 2a: Data Loading and Stationarity ---');
+
+% We use readmatrix() instead of load() to automatically skip text headers
+try
+    disp('Loading data using readmatrix with specific header settings...');
+        
+    % --- Load FF42.txt ---
+    temp_FF42 = readmatrix(fullfile(data_folder_path, 'FF42.txt'), 'NumHeaderLines', 0);
+    
+    % --- Load RF.txt ---
+    temp_RF = readmatrix(fullfile(data_folder_path, 'RF.txt'), 'NumHeaderLines', 1);
+    
+    % --- Load FF6.txt ---
+    temp_FF6 = readmatrix(fullfile(data_folder_path, 'FF6.txt'), 'NumHeaderLines', 1);
+    
+    
+    FF42_returns = temp_FF42(:, 2:end);
+    RF_rate = temp_RF(:, 2:end);
+    FF6_factors = temp_FF6(:, 2:end);
+
+    disp('Data successfully loaded and parsed.');
+
+    % --- Debug ---
+catch ME
+    disp('ERROR: Could not load data files.');
+    disp(data_folder_path);
+    rethrow(ME);
+end
+
+% --- Define dimensions DYNAMICALLY from loaded data ---
+[Time_ff42, N] = size(FF42_returns);
+[Time_rf, N_rf] = size(RF_rate);
+[Time_ff6, K] = size(FF6_factors);
+
+% Check for consistent time series length (rows)
+if Time_ff42 ~= Time_rf || Time_ff42 ~= Time_ff6
+    error('FF42 has %d rows, RF has %d rows, FF6 has %d rows.', Time_ff42, Time_rf, Time_ff6);
+end
+
+% Assign T
+T = Time_ff42; 
+
+disp('Data dimensions loaded:');
+fprintf('  - Time periods: %d\n', T);
+fprintf('  - Portfolios(N):   %d\n', N);
+fprintf('  - Factors(K):      %d\n', K);
+
+% --- Debug ---
+if T ~= 745
+    warning('Loaded time series length (T=%d) does not match expected T=745 from PDF.', T);
+end
+if N ~= 42
+    warning('Loaded portfolios (N=%d) does not match expected N=42 from PDF.', N);
+end
+if K ~= 6
+    warning('Loaded factors (K=%d) does not match expected K=6 from PDF.', K);
+end
+if N_rf ~= 1
+     warning('Loaded Risk Free file (RF.txt) has %d data columns. Expected 1.', N_rf);
+end
+% --------------------------------------------------------
+
+
+% Matrix of returns
+Returns = FF42_returns - repmat(RF_rate, 1, N);
+Factors  = FF6_factors;
+
+disp(['Matrix Returns constructed: ' num2str(size(Returns, 1)) 'x' num2str(size(Returns, 2))]);
+disp(['Matrix Factors constructed: ' num2str(size(Factors, 1)) 'x' num2str(size(Factors, 2))]);
+
+% Augmented Dickey-Fuller (ADF)
+% Null Hypothesis (H0) of adftest is that the series has a unit root
+% When h=1 we REJECT H0
+% When h=0 we FAIL TO REJECT H0
+
+hypo_Returns = zeros(N, 1);
+hypo_factors = zeros(K, 1);
+
+% Test all 42 portfolios
+for i = 1:N
+    hypo_Returns(i) = adftest(Returns(:, i));
+end
+
+% Test all 6 factors
+for i = 1:K
+    hypo_factors(i) = adftest(Factors(:, i));
+end
+
+num_stationary_Returns = sum(hypo_Returns);
+num_stationary_Factors = sum(hypo_factors);
+
+disp('Stationarity Test (ADF):');
+disp(['  - Portfolios (Re): ' num2str(num_stationary_Returns) ' out of ' num2str(N) ' reject the null.']);
+disp(['  - Factors (f): ' num2str(num_stationary_Factors) ' out of ' num2str(K) ' reject the null.']);
+disp(' ');
+
+%% Part 2b: Time Series Regression (OLS)
+
+disp('--- Part 2b: Time Series Regression ---');
+
+% Model: R_t^e = alpha + beta * f_t + epsilon_t
+
+% Construct the regressor matrix X (Tx(K+1)) with an intercept
+X = [ones(T, 1), Factors];
+
+% --- NEW: Print Preview of X matrix ---
+disp('Regressor Matrix (X) Preview:');
+disp('   Intercept | Mkt-RF |  SMB  |  HML  |  RMW  |  CMA  |  MOM');
+disp('-----------------------------------------------------------------');
+N_preview = 5;
+if T >= N_preview
+    % Print first N_preview rows
+    fprintf('%10.0f |%7.4f |%7.4f |%7.4f |%7.4f |%7.4f |%7.4f\n', X(1:N_preview, :)');
+end
+disp('-----------------------------------------------------------------');
+
+% Perform the OLS regressions for all N portfolios simultaneously
+% B_ols = (X'X)^-1 * (X'Re)
+% Row 1: Alphas (intercepts)
+% Rows 2-(K+1): Betas (factor loadings)
+B_ols = X \ Returns;
+
+% Extract alphas (1xN) and betas (KxN)
+alphas = B_ols(1, :);       % 1xN vector
+betas = B_ols(2:end, :);    % KxN matrix
+
+% Transpose to match assignment notation (if needed)
+% [a, B] matrix of N rows and K+1 columns
+alpha_vec = alphas';      % Nx1 vector of alphas
+beta_matrix = betas';     % NxK matrix of betas
+
+disp(['Alpha vector estimated: ' num2str(size(alpha_vec, 1)) 'x' num2str(size(alpha_vec, 2))]);
+disp(['Beta matrix estimated: ' num2str(size(beta_matrix, 1)) 'x' num2str(size(beta_matrix, 2))]);
+
+% Calculate time-series R-squared for each portfolio
+residuals = Returns - (X * B_ols);
+TSS = sum((Returns - mean(Returns)).^2);   % Total Sum of Squares (1xN)
+RSS = sum(residuals.^2);                   % Residual Sum of Squares (1xN)
+
+R_squared = 1 - (RSS ./ TSS); % 1xN vector of R-squared values
+avg_R_squared = mean(R_squared);
+
+% Report the R-squared values
+disp('Time-Series R-squared:');
+for i = 1:N
+    fprintf('  - Portfolio %2d: R^2 = %.4f\n', i, R_squared(i));
+end
+fprintf('  - AVERAGE Time-Series R^2 = %.4f\n', avg_R_squared);
+disp(' ');
+
+% --- Calculate Summary Statistics for Time-Series R^2 ---
+ts_mean   = mean(R_squared);
+ts_median = median(R_squared);
+ts_min    = min(R_squared);
+ts_max    = max(R_squared);
+ts_var    = var(R_squared);
+
+disp('Statistics for Time-Series R^2 across 42 portfolios:');
+disp('-------------------------------------------------------------------');
+disp('    Mean    |   Median   |    Min     |    Max     |   Variance');
+disp('-------------------------------------------------------------------');
+fprintf('   %.4f   |   %.4f   |   %.4f   |   %.4f   |    %.4f\n', ...
+    ts_mean, ts_median, ts_min, ts_max, ts_var);
+disp('-------------------------------------------------------------------');
+disp(' ');
+
+%% Part 2c: Cross-Sectional Regression (Risk Premia)
+
+disp('--- Part 2c: Cross-Sectional Regression ---');
+
+% Model: \bar{R}^e = \gamma_0 * 1_N + \beta * \gamma_1 + e
+% This is a single regression across N=42 portfolios.
+
+% 1. Get time-series sample means of excess returns (Nx1)
+mean_Re = mean(Returns)';
+
+% 2. Construct the cross-sectional regressor matrix (Nx(K+1))
+X_cross_sec = [ones(N, 1), beta_matrix];
+
+% 3. Estimate gamma = [gamma_0; gamma_1]
+% gamma_hat = (X_cs' * X_cs)^-1 * (X_cs' * mean_Re)
+gamma_hat = (X_cross_sec' * X_cross_sec) \ (X_cross_sec' * mean_Re); % (K+1)x1 vector
+
+gamma_0_hat = gamma_hat(1);
+gamma_1_hat = gamma_hat(2:end); % Kx1 vector
+
+% 4. Compute asymptotic covariance matrix (Shanken-corrected)
+% VS = (1 + \gamma_1' * V_f^-1 * \gamma_1) * A * \Sigma * A' + [0 0; 0 V_f]
+
+% Get sample covariance matrices
+V_factor_hat = cov(Factors);           % Covariance of factors
+Sigma_hat = cov(residuals);            % Covarinece of time-series residuals
+
+% Get A_hat = (X_cs' * X_cs)^-1 * X_cs'
+A_hat = (X_cross_sec' * X_cross_sec) \ X_cross_sec'; % (K+1)xN
+
+% Calculate the scalar Shanken correction term (c)
+shanken_scalar = (1 + gamma_1_hat' * (V_factor_hat \ gamma_1_hat));
+
+% Calculate the two parts of the covariance matrix VS
+term1_matrix = shanken_scalar * (A_hat * Sigma_hat * A_hat');
+
+term2_matrix = zeros(K+1, K+1);
+term2_matrix(2:end, 2:end) = V_factor_hat;
+
+% Asymptotic Covariance Matrix of gamma
+VS = term1_matrix + term2_matrix;
+
+% 5. Compute t-statistics
+% Standard Error = sqrt(diag(VS) / T)
+se_gamma = sqrt(diag(VS) / T);
+t_stats = gamma_hat ./ se_gamma;
+
+% Printed Estimates and t-ststistics
+factor_names = {'Intercept(gamma_0)', 'Market', 'Size', 'Value', 'Profitability', 'Investment', 'Momentum'};
+disp('Cross-Sectional Regression Estimates (Gammas):');
+disp('------------------------------------------------------------------------');
+disp('Factor             | Estimate (gamma) | t-statistic | Standard Error ');
+disp('------------------------------------------------------------------------');
+for i = 1:K+1
+    fprintf('%-18s | %16.4f | %11.4f | %14.4f\n', factor_names{i}, gamma_hat(i), t_stats(i), se_gamma(i));
+end
+disp('------------------------------------------------------------------------');
+
+% Compare factor risk premia (gamma_1) with factor time-series means
+mean_f = mean(Factors)'; 
+disp(' ');
+disp('Comparison of Factor Risk Premia (gamma_1) vs. Factor Means:');
+disp('---------------------------------------------------------');
+disp('Factor             | Premia (gamma_1) |   TS Mean Returns(f)');
+disp('---------------------------------------------------------');
+for i = 1:K
+    fprintf('%-18s | %16.4f | %11.4f\n', factor_names{i+1}, gamma_1_hat(i), mean_f(i));
+end
+disp('---------------------------------------------------------');
+disp(' ');
+
+%% Part 2d: Cross-Sectional R-squared
+
+disp('--- Part 2d: Cross-Sectional R-squared ---');
+
+% 1. Compute sample pricing errors (e_hat)
+e_hat = mean_Re - X_cross_sec * gamma_hat;
+
+% 2. Compute errors from a mean-only model (e_0_hat)
+mean_Re_overall = mean(mean_Re);
+e_0_hat = mean_Re - ones(N, 1) * mean_Re_overall;
+
+% 3. Calculate cross-sectional R-squared
+RSS_cs = e_hat' * e_hat;
+TSS_cs = e_0_hat' * e_0_hat;
+
+R_cs_squared = 1 - (RSS_cs / TSS_cs);
+
+fprintf('Total Sum of Squares (TSS_cs):      %.4f\n', TSS_cs);
+fprintf('Residual Sum of Squares (RSS_cs):   %.4f\n', RSS_cs);
+fprintf('Cross-Sectional R-squared (R_cs^2): %.4f\n', R_cs_squared);
+disp(' ');
+
+% Use of the pricing errors equation, we calculated the cross sectional R^2
+% to be 0.4529. This indicates that the F-F model explains
+% 45.29% of the cross-sectional variation of excess returns across the 42
+% portfolios. This represents a nontrivial portion, 
+% suggests the betas relative to the six factors are successful in 
+% capturing a significant degree of the spread between different portfolios.
+% However as the R^2 is not 100% indictaes that idiosyncratic risk and
+% other unobserved factors still influence the returns. For instance 
+
+%% Part 2e: GRS Test
+
+disp('--- Part 2e: GRS Test ---');
+
+% The function signature is [stat,pval] = grs(r1,r2)
+%   r1 = K benchmark portfolios (our factors, f)
+%   r2 = N test portfolios (our excess returns, Re)
+% This test checks if the K factors (r1) span the N test assets (r2).
+% This is equivalent to testing if the alphas from the time-series
+% regressions are jointly zero.
+
+% Initialize p_value to NaN in case the 'try' block fails
+p_value = NaN;
+
+try
+    % Call the GRS function as per its definition: [stat,pval] = grs(r1,r2)
+    [GRS_stat, p_value] = grs(Factors, Returns);
+    
+    fprintf('GRS Test Statistic: %.4f\n', GRS_stat);
+    fprintf('GRS p-value: %.4f\n', p_value);
+    
+    if p_value < 0.05
+        disp('Conclusion: At 5% significance level, we REJECT the null hypothesis.');
+        disp('The six-factor model is rejected by the data (i.e., the factors do not span the test assets).');
+    else
+        disp('Conclusion: At 5% significance level, we FAIL TO REJECT the null hypothesis.');
+        disp('The six-factor model is not rejected by the data (i.e., the factors span the test assets).');
+    end
+    
+catch ME
+    disp('ERROR: Could not run grs.m function.');
+    disp(['Please ensure ''grs.m'' is in your MATLAB path or in the folder: ' data_folder_path]);
+    disp(ME.message);
+end
+
+disp(' ');
+
+%% Identifying the Extreme Alpha
+
+disp('--- Critical Analysis: Identifying Extreme Alphas ---');
+
+% 1. Calculate Standard Errors for Time-Series Alphas
+%    Formula: SE(alpha) = sqrt( Var(residuals) * (X'X)^-1_(1,1) )
+%    Degrees of Freedom = T - K - 1 (K=6 factors, +1 intercept)
+df = T - K - 1;
+
+% Variance of residuals for each portfolio (1xN)
+var_residuals = sum(residuals.^2) / df;
+
+% (X'X)^-1 is common to all portfolios
+invXX = (X' * X) \ eye(K+1);
+term_intercept = invXX(1, 1); % The variance multiplier for the intercept
+
+% Standard Errors for Alphas (Nx1)
+se_alpha_ts = sqrt(var_residuals * term_intercept)'; 
+
+% Calculate t-statistics for Alphas
+t_stat_alpha_ts = alpha_vec ./ se_alpha_ts;
+
+% Find the Portfolio with the Highest Absolute t-statistic
+[max_abs_t, idx_extreme] = max(abs(t_stat_alpha_ts));
+
+% Get the signed values for the report
+extreme_t_stat = t_stat_alpha_ts(idx_extreme);
+extreme_alpha  = alpha_vec(idx_extreme);
+
+disp('Most Mispriced Portfolio (Highest t-statistic on Alpha):');
+disp('------------------------------------------------------');
+fprintf('Portfolio Index:   #%d\n', idx_extreme);
+fprintf('Alpha (Monthly):   %.4f%%\n', extreme_alpha); % Assumes data is percent
+fprintf('t-statistic:       %.4f\n', extreme_t_stat);
+disp('------------------------------------------------------');
+
+% 1-25 are Size/Book-to-Market, 26-42 are Industry
+if idx_extreme <= 25
+    disp('This is likely one of the 25 Size/Book-to-Market.');
+else
+    disp('This is likely one of the 17 Industry.');
+end
+disp(' ');
+
+% To test the efficiency of the model, we employed the Gibbons, Ross, and
+% Shanken (GRS) test. The null hypothesis states that the intercepts of the
+% time series regressions equal zero for all 42 portfolios. The GRS test
+% yielded a ststistic of 3.0552 with a corresponding p-value of 0.0000.
+% Since the p-value is substantially lower than the 5% significant level,
+% we can reject the null hypothesis. This suggests that the F-F factor
+% model does not fully span the mean-varience frontier, and the factors
+% fail to explain the expected returns. From our ananylis the pricing
+% errors are not jointly zero, confirming we reject the model theory. For
+% instance Portfolio 30 exhibited a monthly alpha of -0.36% and t-stat of
+% 3.34. Far exceding the cut off values of the Standard Normal (Z)
+% Distrubition at 1.96 at 5% significance or even 2.58 at 1% significance,
+% thus this porfolio significantly underperformed the models predictions in
+% a way that cannot be attributed to just random chance.
+
+
+%% Overview
+disp('--- Overview: ---');
+disp('Based on the analysis:');
+disp(['- Time-Series Avg R^2 (Part 2b): ' num2str(avg_R_squared, '%.4f')]);
+disp(['- Cross-Sectional R^2 (Part 2d): ' num2str(R_cs_squared, '%.4f')]);
+disp(['- GRS Test p-value (Part 2e): ' num2str(p_value, '%.4f')]);
+disp(' ');
+
+%% Grahing: 
+disp('--- Generating Visualizations ---');
+
+plot_factor_names = {'Market', 'Size', 'Value', 'Profitability', 'Investment', 'Momentum'};
+
+% 1. Factor Return Distributions (Part 2a)
+figure;
+sgtitle('Factor Return Distributions (Part 2a)');
+for i = 1:K
+    subplot(3, 2, i);
+    histogram(Factors(:, i), 75); 
+    title(['Distribution of ' plot_factor_names{i}]);
+    xlabel('Return');
+    ylabel('Frequency');
+    grid on;
+end
+
+% 2. Time-Series Residual Autocorrelation (Part 2b)
+figure;
+sgtitle('Time-Series Residual Autocorrelation (Part 2b)');
+for i = 1:9
+    subplot(3, 3, i);
+    autocorr(residuals(:, i));
+    title(['Residual Autocorrelation - Portfolio ' num2str(i)]);
+end
+
+% 3. Cross-Sectional Regression Fit (Part 2d)
+% Calculate the predicted mean excess returns from the CS regression
+predicted_Re = X_cross_sec * gamma_hat;
+
+figure;
+% Plot the scatter points (Actual vs Predicted)
+scatter(predicted_Re, mean_Re, 'filled', 'MarkerFaceColor', 'b');
+hold on;
+
+% --- Calculate Line of Best Fit (Least Squares) ---
+p = polyfit(predicted_Re, mean_Re, 1);
+
+% Plot the line using the calculated slope and intercept
+line_bestfit = refline(p(1), p(2)); 
+line_bestfit.Color = 'r'; 
+line_bestfit.LineWidth = 2;
+
+hold off;
+
+title('Cross-Sectional Regression Fit (Part 2d)');
+xlabel('Predicted Mean Excess Return (\mu_{pred})');
+ylabel('Actual Mean Excess Return (\mu_{actual})');
+
+legend('Portfolios', 'Line of Best Fit', 'Location', 'best');
+grid on;
+
+% 4. Distribution of Time-Series Alphas (Part 2e)
+figure;
+histogram(alpha_vec, 20);
+hold on;
+% Add a vertical line at zero
+xline(0, 'r--', 'LineWidth', 2, 'Label', 'Zero Alpha');
+hold off;
+title('Distribution of Time-Series Alphas (Part 2e)');
+xlabel('Alpha (\alpha)');
+ylabel('Frequency');
+grid on;
+disp('Visualization complete.');
