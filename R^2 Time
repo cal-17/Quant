@@ -1,0 +1,63 @@
+%% Part 2h: Rolling R-squared (Model Stability) - SINGLE GRAPH COMPARISON
+
+disp('--- Part 2h: Rolling R-squared Analysis (Comparison Plot) ---');
+
+% 1. Find indices based on the static R^2 calculated in Part 2b
+[max_r2_val, best_idx] = max(R_squared);
+[min_r2_val, worst_idx] = min(R_squared);
+p30_idx = 30; % Portfolio #30
+
+% Define window size (e.g., 60 months = 5 years)
+window_size = 300; 
+
+% Pre-allocate vectors to store R^2 for each window and specific portfolios
+rolling_avg_R2 = nan(Periods, 1);
+rolling_R2_best = nan(Periods, 1);
+rolling_R2_worst = nan(Periods, 1);
+rolling_R2_p30 = nan(Periods, 1);
+
+% Loop through time, starting from the first full window
+for t = window_size:Periods
+    % 1. Slice the data for this window (t-59 to t)
+    idx_start = t - window_size + 1;
+    
+    Returns_window = Returns(idx_start:t, :);
+    Factors_window = Factors(idx_start:t, :);
+    
+    % 2. Construct X and run OLS
+    T_window = size(Returns_window, 1);
+    X_window = [ones(T_window, 1), Factors_window];
+    B_window = X_window \ Returns_window;
+    
+    % 3. Calculate Residuals and R-squared for ALL portfolios
+    resid_window = Returns_window - X_window * B_window;
+    
+    TSS_window = sum((Returns_window - mean(Returns_window)).^2);
+    RSS_window = sum(resid_window.^2);
+    
+    % R2_window is a 1xN vector of R^2 values for this window
+    R2_window = 1 - (RSS_window ./ TSS_window); 
+    
+    % 4. Store all four series
+    rolling_avg_R2(t) = mean(R2_window);
+    rolling_R2_best(t) = R2_window(best_idx);
+    rolling_R2_worst(t) = R2_window(worst_idx);
+    rolling_R2_p30(t) = R2_window(p30_idx);
+end
+
+% Plot the result on a single graph
+figure;
+hold on;
+plot(rolling_avg_R2, 'LineWidth', 2.5, 'DisplayName', 'Average R^2 (All Portfolios)', 'Color', 'b');
+plot(rolling_R2_best, 'LineWidth', 1.5, 'DisplayName', ['Best Static R^2 Portfolio (' num2str(best_idx) ')'], 'Color', 'g');
+plot(rolling_R2_worst, 'LineWidth', 1.5, 'DisplayName', ['Worst Static R^2 Portfolio (' num2str(worst_idx) ')'], 'Color', 'r');
+plot(rolling_R2_p30, 'LineWidth', 1.5, 'DisplayName', 'Portfolio #30', 'Color', 'y');
+
+title(['Rolling ' num2str(window_size) '-Month R^2 Stability Comparison']);
+xlabel('Time (Months)');
+ylabel('Rolling R^2');
+xlim([window_size Periods]);
+legend('show', 'Location', 'best');
+grid on;
+
+disp('Rolling R-squared analysis with comparison complete.');
