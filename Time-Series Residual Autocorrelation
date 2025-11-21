@@ -1,0 +1,8 @@
+% 2. Time-Series Residual Autocorrelation (Part 2b)
+figure;
+sgtitle('Time-Series Residual Autocorrelation');
+for i = 1:9
+    subplot(3, 3, i);
+    autocorr(residuals(:, i));
+    title(['Residual Autocorrelation - Portfolio ' num2str(i)]);
+end
